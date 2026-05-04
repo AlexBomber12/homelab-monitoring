@@ -1,0 +1,21 @@
+---
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck yamllint
+          if compgen -G "scripts/*.sh" > /dev/null; then shellcheck scripts/*.sh; fi
+      - name: yamllint
+        run: |
+          yamllint -d "{extends: default, rules: {line-length: {max: 160}}}" docker-compose.yml

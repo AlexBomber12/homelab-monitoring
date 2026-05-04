@@ -1,0 +1,42 @@
+---
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: homelab-prometheus
+    restart: unless-stopped
+    user: "65534:65534"  # nobody:nogroup, matches the volume permissions
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=90d"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.listen-address=0.0.0.0:9090"
+    volumes:
+      - "/srv/homelab-monitoring/prometheus/etc:/etc/prometheus:ro"
+      - "/srv/homelab-monitoring/prometheus/data:/prometheus"
+    ports:
+      - "127.0.0.1:9090:9090"  # loopback only by default
+    networks:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: homelab-grafana
+    restart: unless-stopped
+    user: "472:472"  # grafana:grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - "/srv/homelab-monitoring/grafana/data:/var/lib/grafana"
+      - "/srv/homelab-monitoring/grafana/provisioning:/etc/grafana/provisioning:ro"
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: bridge
