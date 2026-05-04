@@ -1,0 +1,26 @@
+---
+# Data retention is set in docker-compose.yml with
+# --storage.tsdb.retention.time=90d.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "localhost:9090"
+
+  - job_name: megaraid-dashboard
+    static_configs:
+      - targets:
+          - "192.168.50.2:8091"
+        labels:
+          host: nas
+          product: megaraid-dashboard
+
+# - job_name: sms-relay
+#   static_configs:
+#     - targets:
+#         - "192.168.50.2:8092"
