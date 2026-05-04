@@ -13,8 +13,9 @@ without coupling their release cycle to observability infrastructure.
 - Bind service ports to loopback by default until Caddy or a VPN exposes them intentionally.
 - Store all monitoring data under `/srv/homelab-monitoring/`.
 
-This repository currently bootstraps the stack. Prometheus scrape configuration, Grafana
-provisioning, Caddy, TLS, and dashboards arrive in later PRs.
+This repository currently bootstraps the stack and ships Prometheus scrape configuration
+for MegaRAID Dashboard. Grafana provisioning, Caddy, TLS, and dashboards arrive in later
+PRs.
 
 ## Architecture
 
@@ -57,8 +58,7 @@ and Prometheus over SSH tunnels or directly on the host.
 - At least 4 GB RAM available for monitoring plus the product services.
 - Ports `3000` and `9090` available on loopback.
 - Permission to create `/srv/homelab-monitoring/` and its child directories.
-- MegaRAID Dashboard metrics exporter reachable from the Prometheus container network once
-  PR-048 adds scrape configuration.
+- MegaRAID Dashboard metrics exporter reachable from the Prometheus container network.
 
 Check Docker:
 
@@ -110,16 +110,11 @@ sudo chown -R 65534:65534 /srv/homelab-monitoring/prometheus
 sudo chown -R 472:472 /srv/homelab-monitoring/grafana
 ```
 
-PR-048 adds the real Prometheus scrape configuration. Until then, the Prometheus container
-still expects `/srv/homelab-monitoring/prometheus/etc/prometheus.yml` to exist if you start
-the stack manually. A temporary local-only file is enough for a smoke run:
+Install the Prometheus scrape configuration:
 
 ```bash
-sudo tee /srv/homelab-monitoring/prometheus/etc/prometheus.yml >/dev/null <<'EOF'
-global:
-  scrape_interval: 15s
-scrape_configs: []
-EOF
+sudo cp prometheus/etc/prometheus.yml /srv/homelab-monitoring/prometheus/etc/prometheus.yml
+sudo chown 65534:65534 /srv/homelab-monitoring/prometheus/etc/prometheus.yml
 ```
 
 Validate the Compose model:
@@ -238,25 +233,55 @@ sudo chown -R 65534:65534 /srv/homelab-monitoring/prometheus
 
 ## Adding A New Scrape Target
 
-PR-048 owns the first real scrape config. The expected pattern is one job per product
-exporter with a stable target name and explicit host:port pair.
+Use one job per product exporter with a stable target name, explicit host:port pair, and
+labels that dashboards can rely on across product releases.
 
-For MegaRAID Dashboard, the intended target is:
+1. Edit `prometheus/etc/prometheus.yml` and add a new `scrape_configs` entry:
 
 ```yaml
 - job_name: megaraid-dashboard
   static_configs:
     - targets:
-        - 192.168.50.2:8091
+        - "192.168.50.2:8091"
+      labels:
+        host: nas
+        product: megaraid-dashboard
 ```
 
-When adding another product:
+2. Validate the file:
 
-- Keep the exporter in the product repository.
-- Bind the exporter to a private address or protect it with firewall rules.
-- Add only scrape configuration in this repository.
-- Keep labels stable so dashboards do not break across product releases.
-- Verify the target appears in Prometheus before building Grafana panels.
+```bash
+yamllint prometheus/etc/prometheus.yml
+```
+
+3. Copy the updated config to the host bind mount:
+
+```bash
+sudo cp prometheus/etc/prometheus.yml /srv/homelab-monitoring/prometheus/etc/prometheus.yml
+sudo chown 65534:65534 /srv/homelab-monitoring/prometheus/etc/prometheus.yml
+```
+
+4. Reload Prometheus without restarting when it is already running:
+
+```bash
+docker compose exec prometheus kill -HUP 1
+```
+
+If reload fails or Prometheus is not running yet, restart the service:
+
+```bash
+docker compose restart prometheus
+```
+
+5. Confirm the target appears in Prometheus before building Grafana panels:
+
+```bash
+curl http://localhost:9090/api/v1/targets
+```
+
+Keep exporters in their product repositories. Bind exporters to private addresses or
+protect them with firewall rules, and keep this repository limited to scrape
+configuration.
 
 ## Development
 
