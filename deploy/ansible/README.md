@@ -69,3 +69,5 @@ Do not change SMS Gateway message forwarding, MegaRAID SMTP, Docker,
 Inspector/Tunnel, SSH audit restrictions or OS package update policies
 as part of this rollout. The peer SSH banner is *reachability only*, not
 full service health. All notifications are at-least-once.
+
+The playbooks also support a future separate Ansible controller using a **private** inventory with both hosts and per-host monitoring_role/monitoring_peer_ipv4. The local wrapper intentionally selects only its own host. A remote controller must connect through separately authorized administrative SSH (not the read-only sg-audit account), validate the inventory before deployment, and update only one host at a time.
