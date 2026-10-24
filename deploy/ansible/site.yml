@@ -1,7 +1,6 @@
 ---
 - name: Deploy one independently operating Telegram notifier
-  hosts: localhost
-  connection: local
+  hosts: all
   become: true
   gather_facts: true
   vars:
@@ -35,6 +34,8 @@
           - "{{ monitoring_peer_ipv4 }}"
       changed_when: false
       check_mode: false
+      delegate_to: localhost
+      become: false
       tags: [preflight, verify]
 
     - name: Inspect root-only Telegram config directory
