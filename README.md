@@ -38,8 +38,8 @@ Tests use only temporary SQLite databases and mocked Telegram calls. They must n
 1. Review source, tests and systemd units. Confirm that the real existing protected token/chat-id files are present on both hosts without printing their content.
 2. Install reviewed `homelab_notify.py` at `/opt/homelab-monitoring/homelab_notify.py` (root 0644). Create `/var/lib/homelab-monitoring` as root-owned 0700.
 3. Create a root-only `/etc/homelab-monitoring/peer.env`, mode 0600:
-    - On AI-Server: `MONITOR_LOCAL_LABEL=AI-Server`, `MONITOR_PEER_LABEL=SERVER`, `MONITOR_PEER_IPV4=192.168.50.2`.
-    - On SERVER: `MONITOR_LOCAL_LABEL=SERVER`, `MONITOR_PEER_LABEL=AI-Server`, `MONITOR_PEER_IPV4=192.168.50.4`.
+    - On AI-Server: `MONITOR_LOCAL_LABEL=AI-Server`, `MONITOR_PEER_LABEL=SERVER`, `MONITOR_PEER_IPV4=<verified-SERVER-LAN-IP>`.
+    - On SERVER: `MONITOR_LOCAL_LABEL=SERVER`, `MONITOR_PEER_LABEL=AI-Server`, `MONITOR_PEER_IPV4=<verified-AI-Server-LAN-IP>`.
    Validate unit environment and its supported systemd variable substitution on an isolated test machine. Keep host-specific data out of the public repository where feasible.
 4. Install reviewed sample units from `deploy/systemd/`, `systemd-analyze verify`, `systemctl daemon-reload`; first run a **manual** probe and queue flush in a controlled test.
 5. Temporarily simulate a peer SSH probe failure **using a disposable test target** rather than blocking live SSH or rebooting SERVER. Confirm three-failure alert, single recovery, deduplication and retry. Never change production firewall rules to simulate a fault.
