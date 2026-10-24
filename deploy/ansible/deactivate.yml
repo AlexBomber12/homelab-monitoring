@@ -1,0 +1,15 @@
+---
+- name: Stop automatic notifications without touching secrets or queued data
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Disable and stop both monitored timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop:
+        - homelab-peer-ssh.timer
+        - homelab-telegram-flush.timer
