@@ -1,0 +1,209 @@
+---
+- name: Deploy one independently operating Telegram notifier
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  vars:
+    profiles:
+      server: {local_label: SERVER, peer_label: AI-Server}
+      ai-server: {local_label: AI-Server, peer_label: SERVER}
+    units:
+      - homelab-peer-ssh.service
+      - homelab-peer-ssh.timer
+      - homelab-telegram-flush.service
+      - homelab-telegram-flush.timer
+    timers:
+      - homelab-peer-ssh.timer
+      - homelab-telegram-flush.timer
+
+  tasks:
+    - name: Verify explicitly chosen role and local host identity
+      ansible.builtin.assert:
+        that:
+          - monitoring_role is defined
+          - monitoring_role in profiles
+          - monitoring_peer_ipv4 is defined
+          - ansible_facts['hostname'] | lower == profiles[monitoring_role].local_label | lower
+      tags: [preflight, verify]
+
+    - name: Verify literal private peer IPv4 address
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/../validate_peer_ip.py"
+          - "{{ monitoring_peer_ipv4 }}"
+      changed_when: false
+      check_mode: false
+      tags: [preflight, verify]
+
+    - name: Inspect root-only Telegram config directory
+      ansible.builtin.stat:
+        path: /etc/homelab-monitoring
+        follow: false
+      register: private_config
+      tags: [preflight, verify]
+
+    - name: Require private configuration directory
+      ansible.builtin.assert:
+        that:
+          - private_config.stat.isdir | default(false)
+          - private_config.stat.uid | default(-1) == 0
+          - private_config.stat.mode | default('') == '0700'
+      tags: [preflight, verify]
+
+    - name: Inspect existing credentials without reading values
+      ansible.builtin.stat:
+        path: "/etc/homelab-monitoring/{{ item }}"
+        follow: false
+      loop: [telegram-bot-token, telegram-chat-id]
+      register: credential_stats
+      tags: [preflight, verify]
+
+    - name: Require root-owned 0600 credential files
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - item.stat.uid | default(-1) == 0
+          - item.stat.mode | default('') == '0600'
+      loop: "{{ credential_stats.results }}"
+      loop_control:
+        label: "credential metadata"
+      tags: [preflight, verify]
+
+    - name: Inspect existing managed file targets
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /opt/homelab-monitoring/homelab_notify.py
+        - /etc/homelab-monitoring/peer.env
+        - /etc/systemd/system/homelab-peer-ssh.service
+        - /etc/systemd/system/homelab-peer-ssh.timer
+        - /etc/systemd/system/homelab-telegram-flush.service
+        - /etc/systemd/system/homelab-telegram-flush.timer
+      register: existing_targets
+      tags: [preflight]
+
+    - name: Refuse symlink or unowned existing files
+      ansible.builtin.assert:
+        that:
+          - not item.stat.exists | default(false) or
+            (item.stat.isreg | default(false) and item.stat.uid | default(-1) == 0)
+      loop: "{{ existing_targets.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [preflight]
+
+    - name: Ensure code directory is owned by root
+      ansible.builtin.file:
+        path: /opt/homelab-monitoring
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: [install]
+
+    - name: Ensure persistent event state is private
+      ansible.builtin.file:
+        path: /var/lib/homelab-monitoring
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      tags: [install]
+
+    - name: Install reviewed Python program without external dependencies
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../homelab_notify.py"
+        dest: /opt/homelab-monitoring/homelab_notify.py
+        owner: root
+        group: root
+        mode: '0644'
+      tags: [install]
+
+    - name: Install reviewed systemd unit templates
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../systemd/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: "{{ units }}"
+      notify: Reload systemd
+      tags: [install]
+
+    - name: Persist host-specific network peer config
+      ansible.builtin.copy:
+        dest: /etc/homelab-monitoring/peer.env
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          MONITOR_LOCAL_LABEL={{ profiles[monitoring_role].local_label }}
+          MONITOR_PEER_LABEL={{ profiles[monitoring_role].peer_label }}
+          MONITOR_PEER_IPV4={{ monitoring_peer_ipv4 }}
+      tags: [install]
+
+    - name: Apply systemd unit changes before verification
+      ansible.builtin.meta: flush_handlers
+      tags: [install]
+
+    - name: Inspect deployed application checksum
+      ansible.builtin.stat:
+        path: /opt/homelab-monitoring/homelab_notify.py
+        checksum_algorithm: sha256
+      register: installed_app
+      when: not ansible_check_mode
+      tags: [verify]
+
+    - name: Verify deployed source matches reviewed checkout
+      ansible.builtin.assert:
+        that:
+          - installed_app.stat.checksum ==
+            (lookup('ansible.builtin.file', playbook_dir ~ '/../../homelab_notify.py') | hash('sha256'))
+      when: not ansible_check_mode
+      tags: [verify]
+
+    - name: Verify installed systemd unit definitions
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemd-analyze
+          - verify
+          - /etc/systemd/system/homelab-peer-ssh.service
+          - /etc/systemd/system/homelab-peer-ssh.timer
+          - /etc/systemd/system/homelab-telegram-flush.service
+          - /etc/systemd/system/homelab-telegram-flush.timer
+      changed_when: false
+      when: not ansible_check_mode
+      tags: [verify]
+
+    - name: Activate only on explicit operator request
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: "{{ timers }}"
+      when: monitoring_activate | default(false) | bool
+      tags: [activate]
+
+    - name: Verify required enabled and running timers
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, is-enabled, --quiet, "{{ item }}"]
+      loop: "{{ timers }}"
+      changed_when: false
+      when: monitoring_require_active | default(false) | bool
+      tags: [verify]
+
+    - name: Verify required active timer process state
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, is-active, --quiet, "{{ item }}"]
+      loop: "{{ timers }}"
+      changed_when: false
+      when: monitoring_require_active | default(false) | bool
+      tags: [verify]
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
