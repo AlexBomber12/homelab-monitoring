@@ -1,7 +1,6 @@
 ---
 - name: Stop automatic notifications without touching secrets or queued data
-  hosts: localhost
-  connection: local
+  hosts: all
   become: true
   gather_facts: false
   tasks:
