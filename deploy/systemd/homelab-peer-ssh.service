@@ -1,0 +1,21 @@
+[Unit]
+Description=Probe independent peer server SSH endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/homelab-monitoring/peer.env
+ExecStart=/usr/bin/python3 /opt/homelab-monitoring/homelab_notify.py probe-ssh --probe-id peer_ssh --origin ${MONITOR_LOCAL_LABEL} --label ${MONITOR_PEER_LABEL} --ipv4 ${MONITOR_PEER_IPV4} --port 22 --failures-to-alert 3
+UMask=0077
+TimeoutStartSec=15s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/homelab-monitoring
+ReadOnlyPaths=/etc/homelab-monitoring
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
