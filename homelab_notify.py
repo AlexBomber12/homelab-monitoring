@@ -223,6 +223,8 @@ def _send(token: str, chat_id: int, message: str) -> tuple[bool, int, str]:
     try:
         with urllib.request.urlopen(req, timeout=12) as response:
             payload = json.load(response)
+        if not isinstance(payload, dict):
+            return False, 0, "invalid_api_response"
         return (bool(payload.get("ok")), 0, "api_rejected" if not payload.get("ok") else "")
     except urllib.error.HTTPError as exc:
         delay = 0
@@ -246,7 +248,10 @@ def flush(db: sqlite3.Connection, config_dir: Path, limit: int = 20) -> tuple[in
         raise ValueError("invalid flush limit")
     token, chat_id = _credentials(config_dir)
     attempted = sent = 0
+    started = time.monotonic()
     for _ in range(limit):
+        if time.monotonic() - started >= 30:
+            break
         now = time.time()
         row = _claim(db, now)
         if row is None:
