@@ -3,7 +3,8 @@ Description=Check peer server SSH reachability every minute
 
 [Timer]
 OnBootSec=2min
-OnUnitInactiveSec=1min
+OnCalendar=*-*-* *:*:00
+Persistent=true
 AccuracySec=10s
 Unit=homelab-peer-ssh.service
 
