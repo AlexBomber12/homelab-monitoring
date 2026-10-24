@@ -33,29 +33,15 @@ python3 -m py_compile homelab_notify.py
 
 Tests use only temporary SQLite databases and mocked Telegram calls. They must not read actual credentials or reach production servers.
 
-## Proposed controlled deployment (NOT performed by this PR)
+## Reproducible deployment (review candidate only)
 
-1. Review source, tests and systemd units. Confirm that the real existing protected token/chat-id files are present on both hosts without printing their content.
-2. Install reviewed `homelab_notify.py` at `/opt/homelab-monitoring/homelab_notify.py` (root 0644). Create `/var/lib/homelab-monitoring` as root-owned 0700.
-3. Create a root-only `/etc/homelab-monitoring/peer.env`, mode 0600:
-    - On AI-Server: `MONITOR_LOCAL_LABEL=AI-Server`, `MONITOR_PEER_LABEL=SERVER`, `MONITOR_PEER_IPV4=<verified-SERVER-LAN-IP>`.
-    - On SERVER: `MONITOR_LOCAL_LABEL=SERVER`, `MONITOR_PEER_LABEL=AI-Server`, `MONITOR_PEER_IPV4=<verified-AI-Server-LAN-IP>`.
-   Validate unit environment and its supported systemd variable substitution on an isolated test machine. Keep host-specific data out of the public repository where feasible.
-4. Install reviewed sample units from `deploy/systemd/`, `systemd-analyze verify`, `systemctl daemon-reload`; first run a **manual** probe and queue flush in a controlled test.
-5. Temporarily simulate a peer SSH probe failure **using a disposable test target** rather than blocking live SSH or rebooting SERVER. Confirm three-failure alert, single recovery, deduplication and retry. Never change production firewall rules to simulate a fault.
-6. Enable `homelab-telegram-flush.timer` and `homelab-peer-ssh.timer` one host at a time after explicit operator approval; check service hardening and independent Telegram delivery.
-7. Add service-specific event producers only after each check's state machine and failure semantics are tested; do not make backup, RAID, SMS or UPS notification depend on a central SERVER-only process.
+The application, systemd templates, deployment logic and tests are all versioned in this repository. See [Ansible deployment and recovery](deploy/ansible/README.md) for one code path for SERVER and AI-Server.
 
-Example queued synthetic event (does **not** send until flush runs):
+The command `bash deploy/deploy.sh plan ROLE PEER_IPV4 REVIEWED_SHA` is read-only (Ansible check mode), `apply` installs reviewed files and verifies them but **does not enable timers**, `activate` enables automated checks only after separate approval, and `deactivate` stops both timers without deleting credentials or queued events.
 
-```sh
-sudo python3 /opt/homelab-monitoring/homelab_notify.py enqueue \
-  --origin AI-Server --severity INFO --event-key initial_probe_test \
-  --text 'Infrastructure notifier ready'
-sudo python3 /opt/homelab-monitoring/homelab_notify.py flush
-```
+Ansible is only needed on the deployment controller; the notifier runtime remains Python stdlib and systemd. Bot token and numeric private-channel ID are still protected root-owned files outside Git, never passed to Ansible. The same Git revision is deployed on each host with its declared role and peer IP. A clean reinstall requires separately restored encrypted credentials; this repository does not yet provide an encrypted off-host backup.
 
-**Secrets:** never copy token, protected config, private chat ID or real hardware alert contents into public PR comments, CI logs or plain-text Obsidian.
+Rollback of an upgraded notifier means deactivating, checking out the previous reviewed Git commit, applying and verifying that version, then activating after smoke tests. This is not yet an automatic transactional rollback. No production timers have been enabled by this PR.
 
 ## Safety and maintenance
 
