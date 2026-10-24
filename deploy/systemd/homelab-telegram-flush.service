@@ -1,0 +1,20 @@
+[Unit]
+Description=Flush root-protected homelab Telegram event queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /opt/homelab-monitoring/homelab_notify.py flush
+UMask=0077
+TimeoutStartSec=50s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/homelab-monitoring
+ReadOnlyPaths=/etc/homelab-monitoring
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
