@@ -48,8 +48,8 @@ def _secret(path: Path) -> str:
     if path.is_symlink():
         raise ValueError("symlink secret forbidden")
     st = path.stat()
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) != 0o600:
-        raise ValueError("secret must belong to executor and be mode 0600")
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) not in (0o400, 0o600):
+        raise ValueError("secret must belong to executor and be mode 0400 or 0600")
     if st.st_size > 4096:
         raise ValueError("oversized configuration")
     return path.read_text(encoding="utf-8").strip()
@@ -203,12 +203,21 @@ def _claim(db: sqlite3.Connection, now: float) -> sqlite3.Row | None:
         row = db.execute(
             "SELECT id,message,attempts FROM outbound "
             "WHERE sent_at IS NULL AND next_attempt<=? AND lease_until<=? "
-            "ORDER BY id LIMIT 1",
+            "ORDER BY CASE WHEN substr(event_key,1,9)='critical_' THEN 0 ELSE 1 END,id LIMIT 1",
             (now, now),
         ).fetchone()
         if row is not None:
             db.execute("UPDATE outbound SET lease_until=? WHERE id=?", (now + LEASE_SECONDS, row["id"]))
         return row
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _open(request):
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open(request, timeout=12)
 
 
 def _send(token: str, chat_id: int, message: str) -> tuple[bool, int, str]:
@@ -221,11 +230,14 @@ def _send(token: str, chat_id: int, message: str) -> tuple[bool, int, str]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=12) as response:
-            payload = json.load(response)
+        with _open(req) as response:
+            data = response.read(65537)
+        if len(data) > 65536:
+            return False, 0, "response_limit"
+        payload = json.loads(data)
         if not isinstance(payload, dict):
             return False, 0, "invalid_api_response"
-        return (bool(payload.get("ok")), 0, "api_rejected" if not payload.get("ok") else "")
+        return (payload.get("ok") is True, 0, "api_rejected" if payload.get("ok") is not True else "")
     except urllib.error.HTTPError as exc:
         delay = 0
         if exc.code == 429:

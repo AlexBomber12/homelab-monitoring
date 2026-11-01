@@ -1,0 +1,12 @@
+[Unit]
+Description=Quiet local health checks every minute; no machine heartbeat
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=5s
+Unit=homelab-local-alerts.service
+
+[Install]
+WantedBy=timers.target

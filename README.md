@@ -43,6 +43,16 @@ Ansible is only needed on the deployment controller; the notifier runtime remain
 
 Rollback of an upgraded notifier means deactivating, checking out the previous reviewed Git commit, applying and verifying that version, then activating after smoke tests. This is not yet an automatic transactional rollback. No production timers have been enabled by this PR.
 
+## Local important alerts profile
+
+The optional [local-only profile](docs/local-alerts.md) adds UPS, filesystem, backup
+freshness, DNS/HTTPS and served-certificate checks without peer SSH monitoring.
+It uses a dedicated non-login account, systemd credentials and the existing SQLite
+outbox. Its versioned owner transaction is `deploy/install_local.py`; private
+inventory is prepared outside this public repository and hash-verified before use.
+No Ansible installation on the monitored host is needed for this profile.
+The independent machine-heartbeat project remains separate.
+
 ## Safety and maintenance
 
 - Generic email/Telegram notification policy and future maintenance/reboot integration are documented in private Obsidian `20-homelab/infrastructure-inspector-maintenance-policy.md`.

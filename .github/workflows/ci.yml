@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Syntax check
-        run: python3 -m py_compile homelab_notify.py
+        run: python3 -m py_compile homelab_notify.py local_policy.py local_sources.py local_alerts.py run_local.py deploy/install_local.py deploy/read_local_status.py
       - name: Unit tests (offline)
         run: python3 -m unittest discover -s tests -v
       - name: Verify Ansible deployment syntax
