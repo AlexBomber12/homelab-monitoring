@@ -14,7 +14,8 @@ credentials = Path(os.environ["CREDENTIALS_DIRECTORY"])
 suffix = "-probe" if probe else ""
 sys.argv = [sys.argv[0], "--config", str(credentials / "checks.json"),
             "--state-dir", "/var/lib/homelab-local-alerts" + suffix,
-            "--status-dir", "/var/lib/homelab-local-alerts-status" + suffix]
-if not probe:
-    sys.argv += ["--credentials", str(credentials)]
+            "--status-dir", "/var/lib/homelab-local-alerts-status" + suffix,
+            "--credentials", str(credentials)]
+if probe:
+    sys.argv += ["--no-send"]
 raise SystemExit(local_alerts.main())

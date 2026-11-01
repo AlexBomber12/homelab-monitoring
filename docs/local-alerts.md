@@ -81,7 +81,11 @@ keep private filenames out of Telegram and reports.
 
 The versioned owner installer accepts a separately prepared, hash-verified private
 payload. It creates a dedicated non-login service account and no SSH/sudo/maintenance
-grants. A same-identity systemd probe runs with no Telegram credentials before activation.
+grants. A same-identity systemd probe validates the actual Telegram credentials with
+sending disabled before activation. It does not make a Telegram delivery attempt.
+Both owner-only credential files and systemd's root-owned, named-user read-only ACL
+are supported. A readable Unix group, other users, write access, symlinks, oversized
+files or multiple hard links are rejected. File metadata and contents use one descriptor.
 It must report a healthy or intentionally idle baseline. Existing application identities
 and protected policies are compared before and after. No OS packages are installed.
 
@@ -90,7 +94,9 @@ are not deployed by this profile. The installed status-reader operation is read-
 
 On failure the installer deactivates the local timer, restores the previous dispatcher
 and removes exact-hash owned executable/unit files. Credential and outbox state remain
-protected for diagnosis. The installation report gives the exact owner rollback command.
+protected for diagnosis. A root-owned failure report exposes only constant collector
+error codes, not raw journal messages or credentials, for restricted workspace retrieval.
+The installation report gives the exact owner rollback command.
 That command deactivates notifications while preserving monitored data and queued history.
 An interrupted/failed preparation may be resumed with a reviewed `--resume` launch only
 after the rollback receipt and all existing ownership/configuration checks pass.
@@ -105,4 +111,5 @@ systemd probe verifies current permissions and source access before activation.
 * [NUT upsc](https://networkupstools.org/docs/man/upsc) and
   [critical UPS states](https://networkupstools.org/docs/user-manual.chunked/ar01s06.html).
 * [Linux mountinfo per-mount and superblock options](https://man7.org/linux/man-pages/man5/proc_pid_mountinfo.5.html).
-* [systemd credentials and filesystem restrictions](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html).
+* [systemd credentials and filesystem restrictions](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html),
+  and [systemd 255 credential ACL creation](https://github.com/systemd/systemd/blob/v255/src/core/exec-credential.c#L176).

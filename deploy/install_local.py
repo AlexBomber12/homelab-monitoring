@@ -54,7 +54,10 @@ def check(value, code):
 
 def command(args, timeout=25, data=None):
     p = subprocess.run(args, env=ENV, input=data, capture_output=True, timeout=timeout)
-    check(p.returncode == 0 and len(p.stdout) <= 1048576, "command_failed_output_withheld")
+    tag = Path(args[0]).name
+    if len(args) > 1 and args[1] in ("start", "enable", "show", "verify"):
+        tag += "_" + args[1]
+    check(p.returncode == 0 and len(p.stdout) <= 1048576, tag + "_failed_output_withheld")
     return p.stdout
 
 
@@ -134,10 +137,33 @@ def validate_status(path, uid):
         data = json.loads(f.read(65537))
     check(data["collector_ok"] is True and time.time() - 180 <= data["observed_at"] <= time.time() + 60, "collector_not_fresh")
     check(data["machine_heartbeat_enabled"] is False, "unexpected_machine_heartbeat")
+    check(data.get("credentials_validated") is True, "credentials_not_validated")
     if not (data["pending_events"] == 0 and all(o["level"] in ("ok", "idle") for o in data["observations"])):
         emit("baseline_findings", observations=[{k: o[k] for k in ("key", "level", "code")} for o in data["observations"]])
         raise RuntimeError("baseline_findings_require_review")
     return data
+
+
+def safe_service_failure():
+    """Keep only constant collector error codes, never raw journal messages."""
+    try:
+        data = command(["/usr/bin/journalctl", "-u", UNIT, "-n", "30", "--no-pager", "-o", "json"])
+        records = []
+        for line in data.splitlines():
+            try:
+                message = json.loads(json.loads(line)["MESSAGE"])
+                if not isinstance(message, dict) or message.get("collector_ok") is not False:
+                    continue
+                allowed = {"error_type": {"ValueError", "CredentialError", "KeyError", "RuntimeError", "OSError", "PermissionError", "OperationalError"},
+                           "error_code": {"details_withheld", "credential_symlink", "credential_not_private", "credential_size_limit", "credential_token_format", "credential_chat_format"}}
+                row = {k: message[k] for k in allowed if isinstance(message.get(k), str) and message[k] in allowed[k]}
+                if row:
+                    records.append(row)
+            except (ValueError, TypeError, KeyError):
+                continue
+        return records[-3:]
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return []
 
 
 def rollback(backup):
@@ -231,7 +257,7 @@ def install(payload):
         # Persist the exact rollback ownership manifest before activation.
         (backup / "transaction.json").write_text(json.dumps(metadata))
         command(["/usr/bin/systemd-analyze", "verify", "/etc/systemd/system/" + UNIT, "/etc/systemd/system/" + TIMER])
-        emit("same_identity_sandbox_probe_no_telegram_credentials")
+        emit("same_identity_probe_with_credentials_sending_disabled")
         probe_name = "homelab-local-alerts-probe-" + uuid.uuid4().hex
         probe_unit = payload["probe_unit"].replace("__CHECKS__", str(CONFIG / "checks.json"))
         runtime_unit = Path("/run/systemd/system") / (probe_name + ".service")
@@ -253,12 +279,21 @@ def install(payload):
         command(["/usr/bin/systemctl", "start", UNIT], timeout=185)
         status = validate_status(STATUS / "status.json", account.pw_uid)
         after = baseline(payload)
-        for state in (before, after):
-            state["files"].pop(str(ROLE), None)
-        check(after == before, "unrelated_baseline_changed")
-    except BaseException:
+        expected = {**before, "files": {k: v for k, v in before["files"].items() if k != str(ROLE)}}
+        after["files"].pop(str(ROLE), None)
+        check(after == expected, "unrelated_baseline_changed")
+    except BaseException as exc:
+        failure = {"host": payload["hostname"], "status": "installation_failed_rolled_back",
+                   "source_revision": payload["source_revision"], "verified_source_sha256": globals()["INSTALLER_VERIFIED_SHA256"],
+                   "error_type": type(exc).__name__, "safe_service_errors": safe_service_failure(),
+                   "backup_dir": str(backup), "machine_heartbeat_enabled": False}
         emit("automatic_deactivation_and_dispatcher_rollback")
         rollback(backup)
+        failure["protected_baseline_unchanged"] = baseline(payload) == before
+        filename = "/srv/sg-workspaces/default/important-alerts-failure-" + uuid.uuid4().hex + ".json"
+        data = (json.dumps(failure, indent=2) + "\n").encode()
+        private_write(filename, data, 0o644)
+        emit("failure_report_saved", report=filename, sha256=hashlib.sha256(data).hexdigest(), safe_service_errors=failure["safe_service_errors"])
         raise
     report = {"host": payload["hostname"], "status": "local_alerts_installed", "source_revision": payload["source_revision"],
               "verified_source_sha256": globals()["INSTALLER_VERIFIED_SHA256"], "backup_dir": str(backup),

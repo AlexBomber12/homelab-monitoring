@@ -84,7 +84,11 @@ def write_status(directory: Path, data: dict) -> None:
             os.unlink(name)
 
 
-def run(config: dict, state_dir: Path, status_dir: Path, credentials: Path | None) -> dict:
+def run(config: dict, state_dir: Path, status_dir: Path, credentials: Path | None, *, no_send: bool = False) -> dict:
+    # Both the deployment probe and the real service validate the same credentials.
+    # The probe cannot flush even if its isolated outbox contains a fault event.
+    if credentials is not None:
+        outbox._credentials(credentials)
     outbox._private_dir(state_dir)
     with (state_dir / "local.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -93,12 +97,13 @@ def run(config: dict, state_dir: Path, status_dir: Path, credentials: Path | Non
             observations = collect(config, db, now)
             for observation in observations:
                 policy.observe(db, observation, now, config["origin"], config["runbook"])
-            attempted, sent = outbox.flush(db, credentials, limit=5) if credentials else (0, 0)
+            attempted, sent = outbox.flush(db, credentials, limit=5) if credentials and not no_send else (0, 0)
             data = {"schema": 1, "observed_at": now, "collector_ok": True,
                     "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                     "observations": [{"key": o.key, "level": o.level, "code": o.code} for o in observations],
                     "pending_events": db.execute("SELECT count(*) FROM outbound WHERE sent_at IS NULL").fetchone()[0],
-                    "attempted": attempted, "sent": sent, "machine_heartbeat_enabled": False}
+                    "attempted": attempted, "sent": sent, "machine_heartbeat_enabled": False,
+                    "credentials_validated": credentials is not None, "sending_enabled": credentials is not None and not no_send}
             write_status(status_dir, data)
             return data
 
@@ -110,16 +115,18 @@ def main() -> int:
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--status-dir", type=Path, required=True)
     parser.add_argument("--credentials", type=Path)
+    parser.add_argument("--no-send", action="store_true")
     args = parser.parse_args()
     try:
         if args.config.stat().st_size > 65536:
             raise ValueError("configuration limit")
         config = json.loads(args.config.read_bytes())
-        data = run(config, args.state_dir, args.status_dir, args.credentials)
+        data = run(config, args.state_dir, args.status_dir, args.credentials, no_send=args.no_send)
         print(json.dumps({k: data[k] for k in ("collector_ok", "attempted", "sent", "pending_events")}))
         return 0
     except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error) as exc:
-        print(json.dumps({"collector_ok": False, "error_type": type(exc).__name__}), file=sys.stderr)
+        code = str(exc) if isinstance(exc, outbox.CredentialError) else "details_withheld"
+        print(json.dumps({"collector_ok": False, "error_type": type(exc).__name__, "error_code": code}), file=sys.stderr)
         return 1
 
 

@@ -85,6 +85,15 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn("probe-ssh", unit)
         self.assertNotIn("homelab-peer-ssh", (ROOT / "deploy/install_local.py").read_text())
 
+    def test_failure_journal_exports_only_whitelisted_error_codes(self):
+        messages = ["raw journal token: PRIVATE", json.dumps({"collector_ok": False, "error_type": "CredentialError", "error_code": "credential_not_private", "secret": "PRIVATE"}),
+                    json.dumps({"collector_ok": False, "error_type": "PRIVATE", "error_code": "PRIVATE"})]
+        data = b"\n".join(json.dumps({"MESSAGE": message}).encode() for message in messages)
+        with patch.object(deploy, "command", return_value=data):
+            result = deploy.safe_service_failure()
+        self.assertEqual(result, [{"error_type": "CredentialError", "error_code": "credential_not_private"}])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
 
 if __name__ == "__main__":
     unittest.main()
