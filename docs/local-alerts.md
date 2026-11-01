@@ -26,11 +26,20 @@ Runtime thresholds and device identity belong in the private operator configurat
 UPS data unavailable is a telemetry problem, not proof of hardware failure. Normal
 on-battery transitions do not alert unless the available protection becomes dangerous.
 
+An explicitly absent UPS source or reviewed backup job is reported as
+`ups_not_configured` or `backup_not_configured` with level `idle`. These codes mean
+unmonitored coverage, not a healthy UPS or a verified backup. The collector does not
+invent success receipts or treat operating-system package-database copies as data backups.
+
 An idle systemd automount is not a missing disk. The collector does not access its
 contents to wake it. Active autofs plus backing-filesystem entries are distinguished.
 Filesystem superblock read-only flags are used so the service's own read-only bind
 mounts do not generate false alarms. Per-mount-only restrictions outside this
 namespace cannot be inferred from that check; kernel errors provide another signal.
+An explicitly configured remote `mount_only` check reads mount metadata without
+accessing remote contents or calling statvfs. It verifies the selected source and
+read-only state, not remote-server responsiveness or free space. Capacity should be
+checked locally on the storage owner. No network-storage group membership is granted.
 
 HTTPS HEAD=405 is retried using GET / without following redirects or reading page
 contents. Expected redirects and 401/403 are valid frontend responses. Authentication
@@ -79,6 +88,11 @@ keep private filenames out of Telegram and reports.
 
 ## Installation and rollback
 
+New installations use `/opt/homelab-local-alerts` and `/etc/homelab-local-alerts`,
+separate from an existing notification foundation. Previously installed, pinned
+revisions retain their existing paths and rollback program; this code does not
+automatically upgrade or replace them.
+
 The versioned owner installer accepts a separately prepared, hash-verified private
 payload. It creates a dedicated non-login service account and no SSH/sudo/maintenance
 grants. A same-identity systemd probe validates the actual Telegram credentials with
@@ -88,6 +102,9 @@ are supported. A readable Unix group, other users, write access, symlinks, overs
 files or multiple hard links are rejected. File metadata and contents use one descriptor.
 It must report a healthy or intentionally idle baseline. Existing application identities
 and protected policies are compared before and after. No OS packages are installed.
+An operator-reviewed private payload may acknowledge a specific existing warning
+by resource key and exact code. The warning stays active and follows normal delivery
+rules. Critical states, other faults or pending events still prevent acceptance.
 
 Only the local timer is enabled. Existing peer reachability and standalone flush timers
 are not deployed by this profile. The installed status-reader operation is read-only.
@@ -100,6 +117,23 @@ The installation report gives the exact owner rollback command.
 That command deactivates notifications while preserving monitored data and queued history.
 An interrupted/failed preparation may be resumed with a reviewed `--resume` launch only
 after the rollback receipt and all existing ownership/configuration checks pass.
+
+## Encrypted enrollment
+
+`deploy/export_local_credentials.py` is an owner-only export of an existing infrastructure
+sender. Each recipient first creates a root-only RSA-3072 key and publishes its public
+key in a root-owned inventory report. The reviewed export freezes the verified public
+keys, encrypts each host-bound credential object with RSA-OAEP-SHA256 (MGF1-SHA256),
+and writes ciphertext only to the transfer workspace. Plaintext travels through process
+memory/stdin, never command arguments, reports or temporary files. Source credentials
+and services are unchanged; no Telegram message is sent.
+
+The reviewed installer pins the exact envelope and recipient fingerprint, checks the
+root-owned private-key metadata, decrypts in the selected owner's process, verifies the
+hostname and validates Telegram membership through read-only API methods. Credential
+files are then protected in the new local-profile configuration directory. Existing
+notification credentials and timers are preserved. Never replace the pinned envelope
+with an arbitrary workspace file or publish private configuration in Git.
 
 No real UPS power failure, disk error, private SMS or production backup is used as a
 test fixture. Synthetic tests cover fault decisions, deduplication, unsent cancellation,
