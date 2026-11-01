@@ -16,6 +16,7 @@ import re
 import socket
 import sqlite3
 import stat
+import struct
 import sys
 import time
 import urllib.error
@@ -44,24 +45,55 @@ def _private_dir(path: Path) -> None:
         raise ValueError("state directory must belong to executor and be mode 0700")
 
 
+class CredentialError(ValueError):
+    """Only constant, non-secret diagnostic codes may be supplied here."""
+
+
+def _systemd_read_acl(fd: int, uid: int) -> bool:
+    """Accept only root + the current UID, read-only, not a readable Unix group.
+
+    systemd 255 prefers a root-owned 0440 file with a named-user ACL over chown.
+    The 040 group-mode bits represent the ACL mask, not the owning group's rights.
+    Linux POSIX ACL xattr: version u32 followed by (tag u16, perm u16, id u32).
+    """
+    try:
+        data = os.getxattr(fd, "system.posix_acl_access")
+    except OSError:
+        return False
+    if len(data) != 44 or struct.unpack_from("<I", data)[0] != 2:
+        return False
+    entries = list(struct.iter_unpack("<HHI", data[4:]))
+    unspecified = 0xffffffff
+    return len(entries) == 5 and set(entries) == {
+        (1, 4, unspecified), (2, 4, uid), (4, 0, unspecified),
+        (16, 4, unspecified), (32, 0, unspecified)}
+
+
 def _secret(path: Path) -> str:
     if path.is_symlink():
-        raise ValueError("symlink secret forbidden")
-    st = path.stat()
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) != 0o600:
-        raise ValueError("secret must belong to executor and be mode 0600")
-    if st.st_size > 4096:
-        raise ValueError("oversized configuration")
-    return path.read_text(encoding="utf-8").strip()
+        raise CredentialError("credential_symlink")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        st = os.fstat(stream.fileno())
+        own_private = st.st_uid == os.geteuid() and stat.S_IMODE(st.st_mode) in (0o400, 0o600)
+        systemd_acl = st.st_uid == 0 and stat.S_IMODE(st.st_mode) == 0o440 and _systemd_read_acl(stream.fileno(), os.geteuid())
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or not (own_private or systemd_acl):
+            raise CredentialError("credential_not_private")
+        if st.st_size > 4096:
+            raise CredentialError("credential_size_limit")
+        data = stream.read(4097)
+        if len(data) > 4096:
+            raise CredentialError("credential_size_limit")
+    return data.decode("utf-8").strip()
 
 
 def _credentials(config_dir: Path) -> tuple[str, int]:
     token = _secret(config_dir / "telegram-bot-token")
     chat = _secret(config_dir / "telegram-chat-id")
     if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", token):
-        raise ValueError("invalid bot credentials")
+        raise CredentialError("credential_token_format")
     if not re.fullmatch(r"-100[0-9]+", chat):
-        raise ValueError("invalid private channel identifier")
+        raise CredentialError("credential_chat_format")
     return token, int(chat)
 
 
@@ -203,12 +235,21 @@ def _claim(db: sqlite3.Connection, now: float) -> sqlite3.Row | None:
         row = db.execute(
             "SELECT id,message,attempts FROM outbound "
             "WHERE sent_at IS NULL AND next_attempt<=? AND lease_until<=? "
-            "ORDER BY id LIMIT 1",
+            "ORDER BY CASE WHEN substr(event_key,1,9)='critical_' THEN 0 ELSE 1 END,id LIMIT 1",
             (now, now),
         ).fetchone()
         if row is not None:
             db.execute("UPDATE outbound SET lease_until=? WHERE id=?", (now + LEASE_SECONDS, row["id"]))
         return row
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _open(request):
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open(request, timeout=12)
 
 
 def _send(token: str, chat_id: int, message: str) -> tuple[bool, int, str]:
@@ -221,11 +262,14 @@ def _send(token: str, chat_id: int, message: str) -> tuple[bool, int, str]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=12) as response:
-            payload = json.load(response)
+        with _open(req) as response:
+            data = response.read(65537)
+        if len(data) > 65536:
+            return False, 0, "response_limit"
+        payload = json.loads(data)
         if not isinstance(payload, dict):
             return False, 0, "invalid_api_response"
-        return (bool(payload.get("ok")), 0, "api_rejected" if not payload.get("ok") else "")
+        return (payload.get("ok") is True, 0, "api_rejected" if payload.get("ok") is not True else "")
     except urllib.error.HTTPError as exc:
         delay = 0
         if exc.code == 429:

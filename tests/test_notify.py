@@ -100,7 +100,7 @@ class TestNotifier(unittest.TestCase):
         from io import BytesIO
         token = "1234:" + "X" * 25
         error = HTTPError(f"https://api.telegram.org/bot{token}/sendMessage", 429, "busy", {}, BytesIO(b'{"parameters":{"retry_after":25}}'))
-        with patch.object(n.urllib.request, "urlopen", side_effect=error):
+        with patch.object(n, "_open", side_effect=error):
             result = n._send(token, -1001234567890, "test")
         self.assertEqual(result, (False, 25, "http_429"))
         self.assertNotIn(token, repr(result))

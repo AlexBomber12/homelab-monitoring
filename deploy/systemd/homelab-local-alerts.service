@@ -1,0 +1,25 @@
+[Unit]
+Description=Check local UPS, storage, backup and HTTPS; send important incidents only
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=homelab-alerts
+Group=homelab-alerts
+SupplementaryGroups=systemd-journal
+ExecStart=/usr/bin/python3 -I -B /opt/homelab-monitoring/run_local.py
+LoadCredential=checks.json:/etc/homelab-monitoring/checks.json
+LoadCredential=telegram-bot-token:/etc/homelab-monitoring/telegram-bot-token
+LoadCredential=telegram-chat-id:/etc/homelab-monitoring/telegram-chat-id
+UMask=0077
+TimeoutStartSec=180s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/homelab-local-alerts /var/lib/homelab-local-alerts-status
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+LockPersonality=yes
