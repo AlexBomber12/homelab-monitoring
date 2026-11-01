@@ -57,6 +57,8 @@ def storage(key: str, data: dict, limits: dict) -> list[Observation]:
     if data.get("read_only"):
         return [Observation(key, "critical", "filesystem_read_only", "файловая система перешла в режим только чтения",
                             "Сохранение данных нарушено; возможна неисправность хранения.", "filesystem: read-only", 0)]
+    if limits.get("mount_only"):
+        return [Observation(key, "ok", "mount_present", "подключение сетевого тома существует", "", "")]
     free = data["available_bytes"]
     inode_low = data.get("total_inodes", 0) and data.get("free_inodes", 0) < max(1000, data["total_inodes"] * 0.01)
     inode_critical = data.get("total_inodes", 0) and data.get("free_inodes", 0) <= 1000

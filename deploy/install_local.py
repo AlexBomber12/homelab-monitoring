@@ -28,8 +28,8 @@ import uuid
 USER = "homelab-alerts"
 STATE = Path("/var/lib/homelab-local-alerts")
 STATUS = Path("/var/lib/homelab-local-alerts-status")
-CONFIG = Path("/etc/homelab-monitoring")
-CODE = Path("/opt/homelab-monitoring")
+CONFIG = Path("/etc/homelab-local-alerts")
+CODE = Path("/opt/homelab-local-alerts")
 ROLE = Path("/usr/local/libexec/sg-agent-dispatch.py")
 UNIT = "homelab-local-alerts.service"
 TIMER = "homelab-local-alerts.timer"
@@ -129,7 +129,7 @@ def ensure_directory(path, mode, uid=0, gid=0):
     os.chown(path, uid, gid)
 
 
-def validate_status(path, uid):
+def validate_status(path, uid, allowed_findings=None):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as f:
         s = os.fstat(f.fileno())
@@ -138,10 +138,67 @@ def validate_status(path, uid):
     check(data["collector_ok"] is True and time.time() - 180 <= data["observed_at"] <= time.time() + 60, "collector_not_fresh")
     check(data["machine_heartbeat_enabled"] is False, "unexpected_machine_heartbeat")
     check(data.get("credentials_validated") is True, "credentials_not_validated")
-    if not (data["pending_events"] == 0 and all(o["level"] in ("ok", "idle") for o in data["observations"])):
+    allowed_findings = allowed_findings or {}
+    acceptable = all(o["level"] in ("ok", "idle") or (o["level"] == "warning" and o["code"] in allowed_findings.get(o["key"], [])) for o in data["observations"])
+    if not (data["pending_events"] == 0 and acceptable):
         emit("baseline_findings", observations=[{k: o[k] for k in ("key", "level", "code")} for o in data["observations"]])
         raise RuntimeError("baseline_findings_require_review")
     return data
+
+
+def extend_dispatcher(original, profile):
+    fixed = (b'    if request == "diagnostics.important_alerts":\n'
+             b'        os.execve("/usr/bin/python3", ["/usr/bin/python3", "-I", "/usr/local/libexec/sg-important-alerts-status.py"], ENV)\n')
+    check(b"diagnostics.important_alerts" not in original, "diagnostic_already_present")
+    if profile == "host_mapping":
+        check(original.count(b"HOST_DIAGNOSTICS = {") == 1, "dispatcher_anchor_changed")
+        updated = original.replace(b"HOST_DIAGNOSTICS = {", b"HOST_DIAGNOSTICS = {\n    'diagnostics.important_alerts': '/usr/local/libexec/sg-important-alerts-status.py',", 1)
+    elif profile in ("ai_workspace", "spark_workspace"):
+        anchor = b'    if request in ("workspace.info", "workspace.request"):'
+        check(original.count(anchor) == 1, "dispatcher_anchor_changed")
+        updated = original.replace(anchor, fixed + anchor, 1)
+        if profile == "ai_workspace":
+            caps = b'"agent.capabilities", "workspace.info",'
+            replacement = b'"agent.capabilities", "diagnostics.important_alerts", "workspace.info",'
+        else:
+            caps = b'"workspace.request"],'
+            replacement = b'"workspace.request", "diagnostics.important_alerts"],'
+        check(updated.count(caps) == 1, "capabilities_anchor_changed")
+        updated = updated.replace(caps, replacement, 1)
+    else:
+        raise RuntimeError("unsupported_dispatcher_profile")
+    compile(updated, str(ROLE), "exec")
+    return updated
+
+
+def credentials_from_envelope(payload):
+    """Decrypt the reviewed ciphertext only inside the selected owner's process."""
+    envelope = payload["credential_envelope"]
+    check(envelope["host"] == payload["hostname"], "envelope_target_mismatch")
+    directory = Path("/var/lib/homelab-alerts-onboarding")
+    meta = os.lstat(directory)
+    check(stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and stat.S_IMODE(meta.st_mode) == 0o700, "recipient_directory_metadata")
+    key = directory / "recipient.pem"
+    fd = os.open(key, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        meta = os.fstat(stream.fileno())
+        check(stat.S_ISREG(meta.st_mode) and meta.st_uid == 0 and meta.st_nlink == 1 and stat.S_IMODE(meta.st_mode) == 0o600 and meta.st_size <= 16384, "recipient_key_metadata")
+        private = stream.read(16385)
+    public = command(["/usr/bin/openssl", "pkey", "-pubout"], data=private)
+    check(hashlib.sha256(public).hexdigest() == payload["recipient_public_key_sha256"] == envelope["recipient_public_key_sha256"], "recipient_key_changed")
+    encrypted = base64.b64decode(envelope["ciphertext_base64"], validate=True)
+    check(len(encrypted) == 384, "envelope_ciphertext_size")
+    plain = command(["/usr/bin/openssl", "pkeyutl", "-decrypt", "-inkey", str(key), "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha256", "-pkeyopt", "rsa_mgf1_md:sha256"], data=encrypted)
+    data = json.loads(plain)
+    check(set(data) == {"v", "host", "token", "chat"} and data["v"] == 1 and data["host"] == payload["hostname"], "envelope_plaintext_schema")
+    token, chat = data["token"], data["chat"]
+    check(isinstance(token, str) and bool(re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", token)), "envelope_token_format")
+    check(isinstance(chat, str) and bool(re.fullmatch(r"-100[0-9]+", chat)), "envelope_chat_format")
+    identity = telegram_read(token, "getMe", {})
+    room = telegram_read(token, "getChat", {"chat_id": chat})
+    member = telegram_read(token, "getChatMember", {"chat_id": chat, "user_id": identity["id"]})
+    check(member.get("status") in ("creator", "administrator") and (room.get("type") != "channel" or member.get("can_post_messages", member.get("status") == "creator")), "envelope_sender_permission")
+    return token.encode(), chat.encode()
 
 
 def safe_service_failure():
@@ -216,11 +273,9 @@ def install(payload):
     before = baseline(payload)
     original_role = ROLE.read_bytes()
     check(hashlib.sha256(original_role).hexdigest() == payload["dispatcher_before_sha256"], "dispatcher_baseline_changed")
-    check(b"'diagnostics.resolver': '/usr/local/libexec/sg-server-resolver-report.py'," in original_role, "dispatcher_anchor_changed")
-    updated_role = original_role.replace(b"HOST_DIAGNOSTICS = {", b"HOST_DIAGNOSTICS = {\n    'diagnostics.important_alerts': '/usr/local/libexec/sg-important-alerts-status.py',", 1)
-    compile(updated_role, str(ROLE), "exec")
+    updated_role = extend_dispatcher(original_role, payload.get("dispatcher_profile", "host_mapping"))
     emit("verify_existing_channel_without_test_message")
-    token, chat = credentials_from_existing_infra_sender(payload["credential_source_container"])
+    token, chat = credentials_from_envelope(payload) if "credential_envelope" in payload else credentials_from_existing_infra_sender(payload["credential_source_container"])
     backup = Path(tempfile.mkdtemp(prefix="homelab-local-alerts.", dir="/var/backups"))
     os.chmod(backup, 0o700)
     private_write(backup / "dispatcher.before", original_role)
@@ -265,7 +320,7 @@ def install(payload):
         try:
             command(["/usr/bin/systemctl", "daemon-reload"])
             command(["/usr/bin/systemctl", "start", probe_name + ".service"], timeout=185)
-            validate_status(Path(str(STATUS) + "-probe") / "status.json", account.pw_uid)
+            validate_status(Path(str(STATUS) + "-probe") / "status.json", account.pw_uid, payload.get("allowed_baseline_findings"))
         finally:
             runtime_unit.unlink(missing_ok=True)
             command(["/usr/bin/systemctl", "daemon-reload"])
@@ -277,7 +332,7 @@ def install(payload):
         os.replace(temp, ROLE)
         command(["/usr/bin/systemctl", "enable", "--now", TIMER])
         command(["/usr/bin/systemctl", "start", UNIT], timeout=185)
-        status = validate_status(STATUS / "status.json", account.pw_uid)
+        status = validate_status(STATUS / "status.json", account.pw_uid, payload.get("allowed_baseline_findings"))
         after = baseline(payload)
         expected = {**before, "files": {k: v for k, v in before["files"].items() if k != str(ROLE)}}
         after["files"].pop(str(ROLE), None)
@@ -301,7 +356,8 @@ def install(payload):
               "machine_heartbeat_enabled": False, "test_message_sent": False,
               "credentials_validated_via_read_only_api": True, "existing_sender_unchanged": True,
               "protected_files_and_service_identities_unchanged": True, "fresh_status": status,
-              "diagnostic_operation": "diagnostics.important_alerts", "privileged_agent_grants_added": False}
+              "diagnostic_operation": "diagnostics.important_alerts", "privileged_agent_grants_added": False,
+              "acknowledged_baseline_findings": payload.get("allowed_baseline_findings", {})}
     filename = "/srv/sg-workspaces/default/important-alerts-apply-" + uuid.uuid4().hex + ".json"
     private_write(filename, (json.dumps(report, indent=2) + "\n").encode(), 0o644)
     emit("installed", report=filename, sha256=hashlib.sha256(Path(filename).read_bytes()).hexdigest())

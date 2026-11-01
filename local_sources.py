@@ -46,13 +46,15 @@ def mountinfo(text: str, target: str) -> dict:
     return rows[-1]
 
 
-def storage(target: str, expected_source: str) -> dict:
+def storage(target: str, expected_source: str, *, check_capacity: bool = True) -> dict:
     result = mountinfo(Path("/proc/self/mountinfo").read_text(), target)
     if not result.get("mounted"):
         # Avoid touching an idle automount, which would spin up the disk.
         return result
     if result["source"] != expected_source:
         return {"mounted": False, "error": "unexpected_device"}
+    if not check_capacity:
+        return result
     try:
         s = os.statvfs(target)
         result.update(available_bytes=s.f_bavail * s.f_frsize, total_bytes=s.f_blocks * s.f_frsize,

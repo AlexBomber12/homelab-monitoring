@@ -20,9 +20,10 @@ import local_sources as sources
 
 
 def collect(config: dict, db: sqlite3.Connection, now: float) -> list[policy.Observation]:
-    rows = [policy.ups("ups.primary", sources.nut(config["ups_name"]))]
+    rows = [policy.ups("ups.primary", sources.nut(config["ups_name"]))] if config.get("ups_name") else [
+        policy.Observation("ups.primary", "idle", "ups_not_configured", "источник UPS не настроен", "", "")]
     for item in config["storage"]:
-        data = sources.storage(item["target"], item["source"])
+        data = sources.storage(item["target"], item["source"], check_capacity=not item.get("mount_only", False))
         if data.get("idle"):
             unit = item["mount_unit"]
             state = sources.properties(unit)
@@ -30,16 +31,19 @@ def collect(config: dict, db: sqlite3.Connection, now: float) -> list[policy.Obs
                 data = {"mounted": False}
         rows.extend(policy.storage(item["key"], data, item))
     db.execute("CREATE TABLE IF NOT EXISTS local_receipts (key TEXT PRIMARY KEY, timestamp REAL NOT NULL)")
-    backup_data = sources.backup(config["backup"])
-    row = db.execute("SELECT timestamp FROM local_receipts WHERE key='backup'").fetchone()
-    last = row[0] if row else config["backup"]["initial_last_success"]
-    new = backup_data.get("last_success")
-    if new is not None and new <= now + 60:
-        last = max(last, new)
-    if backup_data.get("source_verified"):
-        db.execute("INSERT OR REPLACE INTO local_receipts VALUES ('backup',?)", (last,))
-    backup_data["last_success"] = last
-    rows.append(policy.backup("backup.cloud", backup_data, now, config["backup"]["max_age_seconds"]))
+    if config.get("backup"):
+        backup_data = sources.backup(config["backup"])
+        row = db.execute("SELECT timestamp FROM local_receipts WHERE key='backup'").fetchone()
+        last = row[0] if row else config["backup"]["initial_last_success"]
+        new = backup_data.get("last_success")
+        if new is not None and new <= now + 60:
+            last = max(last, new)
+        if backup_data.get("source_verified"):
+            db.execute("INSERT OR REPLACE INTO local_receipts VALUES ('backup',?)", (last,))
+        backup_data["last_success"] = last
+        rows.append(policy.backup("backup.cloud", backup_data, now, config["backup"]["max_age_seconds"]))
+    else:
+        rows.append(policy.Observation("backup.cloud", "idle", "backup_not_configured", "источник резервного копирования не настроен", "", ""))
     expires = []
     # A failed frontend must not serially delay UPS delivery behind every timeout.
     with ThreadPoolExecutor(max_workers=3) as pool:
